@@ -182,62 +182,105 @@ if excel_file and pdf_file:
 
     ore, lorde, assenze, straord = ore_attese(df, lavorabili)
 
+    # ---------- CONFRONTO RIGA PER RIGA ----------
+    # Gli importi sono arrotondati al centesimo, come fa la busta paga.
     st.subheader("Controllo ore e importi")
-    righe, ore_diverse, non_lette = [], [], []
+    righe, effetti, non_lette = [], [], []
     tot_busta = tot_atteso = 0.0
     for v in VOCI:
         b = busta["voci"][v["chiave"]]
-        atteso_ore = ore[v["chiave"]]
-        atteso_eur = atteso_ore * tariffa(paga, v)
-        tot_atteso += atteso_eur
+        ore_att = ore[v["chiave"]]
+        tar_att = tariffa(paga, v)
+        D = round(ore_att * tar_att, 2)                  # importo atteso dal foglio
+        diff_riga = None
         if b:
-            tot_busta += b["importo"]
-            if abs(b["ore"] - atteso_ore) > 0.01:
-                ore_diverse.append(f"{v['nome']}: busta {b['ore']:.2f} ore, foglio {atteso_ore:.2f} ore")
+            A = b["importo"]                             # importo scritto in busta
+            B = round(b["ore"] * b["tariffa"], 2)        # ore x tariffa della busta
+            C = round(b["ore"] * tar_att, 2)             # ore della busta con la tariffa attesa
+            tot_busta += A
+            tot_atteso += D
+            diff_riga = round(A - D, 2)
+            cause = [
+                (round(C - D, 2), f"{v['nome']}: la busta paga {b['ore']:.2f} ore, il foglio ne conta "
+                                  f"{ore_att:.2f} ({b['ore'] - ore_att:+.2f} ore)"),
+                (round(B - C, 2), f"{v['nome']}: tariffa in busta {b['tariffa']:.5f} invece di {tar_att:.5f}"),
+                (round(A - B, 2), f"{v['nome']}: l'importo in busta ({A:.2f}) non è ore x tariffa ({B:.2f})"),
+            ]
+            for euro, testo in cause:
+                if abs(euro) >= 0.01:
+                    effetti.append((testo, euro))
         else:
             non_lette.append(v["nome"])
         righe.append({
             "Voce": v["nome"],
             "Ore busta": b["ore"] if b else None,
-            "Ore foglio": round(atteso_ore, 2),
+            "Ore foglio": round(ore_att, 2),
             "Importo busta (€)": b["importo"] if b else None,
-            "Importo atteso (€)": round(atteso_eur, 2),
+            "Importo atteso (€)": D,
+            "Differenza (€)": diff_riga,
         })
-    tab = pd.DataFrame(righe)
-    st.dataframe(tab, hide_index=True)
-
-    c1, c2 = st.columns(2)
-    c1.metric("Totale 4 voci in busta", f"{tot_busta:.2f} €")
-    c2.metric("Totale calcolato dal foglio", f"{tot_atteso:.2f} €")
-    diff = tot_busta - tot_atteso
+    st.dataframe(pd.DataFrame(righe), hide_index=True)
     if non_lette:
-        st.warning("Non ho trovato nel PDF queste righe: " + ", ".join(non_lette))
-    if ore_diverse:
-        st.warning("⚠️ Ore diverse tra busta e foglio (da controllare con l'ufficio paghe):\n\n- "
-                   + "\n- ".join(ore_diverse))
-    elif not non_lette:
-        st.success("✅ Le ore delle 4 righe coincidono con il foglio.")
-    st.caption(f"Differenza in euro rispetto al calcolo: {diff:+.2f} € "
-               "(positivo = la busta è più alta). Dipende da come le ore sono divise tra le righe.")
+        st.warning("Non ho trovato nel PDF queste righe: " + ", ".join(non_lette)
+                   + ". I totali qui sotto non le comprendono.")
 
+    # ---------- VANTAGGI E SVANTAGGI ----------
+    st.subheader("Vantaggi e svantaggi per te")
+    vantaggio = sum(e for _, e in effetti if e > 0)
+    svantaggio = -sum(e for _, e in effetti if e < 0)
+    saldo = round(tot_busta - tot_atteso, 2)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("A tuo vantaggio", f"{vantaggio:.2f} €")
+    m2.metric("A tuo svantaggio", f"{svantaggio:.2f} €")
+    m3.metric("Saldo", f"{saldo:+.2f} €")
+
+    if not effetti:
+        st.success("✅ Nessuna differenza: busta e foglio coincidono.")
+    for testo, euro in effetti:
+        if euro > 0:
+            st.success(f"A tuo VANTAGGIO: la busta paga {euro:.2f} € in più. {testo}")
+        else:
+            st.error(f"A tuo SVANTAGGIO: la busta paga {abs(euro):.2f} € in meno. {testo}")
+
+    # caso tipico: ore spostate tra la riga festiva diurna e la riga notturna festiva
+    bf, bn = busta["voci"]["fest"], busta["voci"]["nottfest"]
+    if bf and bn:
+        d_f, d_n = bf["ore"] - ore["fest"], bn["ore"] - ore["nottfest"]
+        if abs(d_f) > 0.01 and abs(d_f + d_n) <= 0.01:
+            if d_f > 0:
+                st.info(f"La busta ha spostato {abs(d_f):.2f} ore dalla riga 'notturno festivo' alla riga "
+                        "'festivo diurno': quelle ore sono pagate come festivo diurno (tariffa più alta) "
+                        "invece che con la sola maggiorazione notturna.")
+            else:
+                st.info(f"La busta ha spostato {abs(d_f):.2f} ore dalla riga 'festivo diurno' alla riga "
+                        "'notturno festivo': quelle ore sono pagate con la sola maggiorazione notturna "
+                        "(tariffa più bassa) invece che come festivo diurno.")
+    if not non_lette:
+        verso = "più alta" if saldo > 0 else "più bassa" if saldo < 0 else "uguale"
+        st.caption(f"Totale delle 4 righe: busta {tot_busta:.2f} €, foglio {tot_atteso:.2f} € "
+                   f"(busta {verso}). Il calcolo del foglio è una stima: per decidere se chiedere "
+                   "una correzione confrontati con l'ufficio paghe o con il sindacato.")
+
+    # ---------- ALTRI CONTROLLI ----------
     st.subheader("Altri controlli")
     if busta["effettive"] is not None:
-        if abs(busta["effettive"] - lorde) <= 0.01:
+        d_ore = busta["effettive"] - lorde
+        if abs(d_ore) <= 0.01:
             st.success(f"✅ Ore effettive lavorate: {busta['effettive']:.2f} in busta = {lorde:.2f} nel foglio (senza pausa).")
         else:
-            st.warning(f"⚠️ Ore effettive lavorate: {busta['effettive']:.2f} in busta, {lorde:.2f} nel foglio (senza pausa).")
+            stima = abs(d_ore) * paga
+            if d_ore < 0:
+                st.error(f"A tuo SVANTAGGIO: la busta conta {abs(d_ore):.2f} ore lavorate in meno del foglio "
+                         f"({busta['effettive']:.2f} contro {lorde:.2f}): circa {stima:.2f} € in meno "
+                         "(stima, in parte già compresa nelle righe sopra).")
+            else:
+                st.success(f"A tuo VANTAGGIO: la busta conta {d_ore:.2f} ore lavorate in più del foglio "
+                           f"({busta['effettive']:.2f} contro {lorde:.2f}): circa {stima:.2f} € in più "
+                           "(stima, in parte già compresa nelle righe sopra).")
     for v in VOCI:
         b = busta["voci"][v["chiave"]]
-        if not b:
-            continue
-        attesa = tariffa(paga, v)
-        ok_tar = abs(b["tariffa"] - attesa) < 0.0001
-        ok_imp = abs(b["ore"] * b["tariffa"] - b["importo"]) < 0.02
-        if ok_tar and ok_imp:
+        if b and abs(b["tariffa"] - tariffa(paga, v)) < 0.0001 and abs(b["ore"] * b["tariffa"] - b["importo"]) < 0.02:
             st.success(f"✅ {v['nome']}: tariffa {b['tariffa']:.5f} e importo corretti.")
-        else:
-            st.warning(f"⚠️ {v['nome']}: tariffa in busta {b['tariffa']:.5f} (attesa {attesa:.5f}); "
-                       f"ore x tariffa = {b['ore'] * b['tariffa']:.2f} (in busta {b['importo']:.2f}).")
 
     st.info(f"Metodo della busta: straordinario = ore effettive {lorde:.2f} - (ore lavorabili {lavorabili:.2f} "
             f"- ore di assenza {assenze:.2f}) = {straord:.2f} ore. "
