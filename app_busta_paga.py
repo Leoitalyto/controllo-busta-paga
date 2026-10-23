@@ -2,6 +2,7 @@ import re
 import pandas as pd
 import pdfplumber
 import streamlit as st
+from openpyxl import load_workbook
 
 # ---------------------------------------------------------------
 # PARTE 1 - FUNZIONI
@@ -44,7 +45,28 @@ def leggi_excel(file):
     if "Data" not in df.columns or "Ore lavorate" not in df.columns:
         raise ValueError("Non trovo le colonne 'Data' e 'Ore lavorate'. Colonne trovate: "
                          + ", ".join(df.columns))
-    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+
+    # --- CONTROLLI SULLE DATE E SUGLI ERRORI DEL FOGLIO ---
+    primo_rigo = 6 if nuovo else 2          # numero della prima riga di dati in Excel
+    if nuovo:
+        try:
+            if hasattr(file, "seek"):
+                file.seek(0)
+            ws_ctrl = load_workbook(file, data_only=True)["Ore"]
+            errati = [c.coordinate for riga in ws_ctrl["A6:V36"] for c in riga if c.data_type == "e"]
+        except Exception:
+            errati = []
+        if errati:
+            raise ValueError("il foglio contiene errori di calcolo (#VALORE! o simili) nelle celle "
+                             + ", ".join(errati[:8]) + (" ..." if len(errati) > 8 else "")
+                             + ". Di solito una data non è una vera data: scrivila come gg/mm/aaaa.")
+    # Se per caso le date sono testo, le leggo come giorno/mese/anno.
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce", dayfirst=True, format="mixed")
+    ore_tmp = pd.to_numeric(df["Ore lavorate"], errors="coerce").fillna(0.0)
+    senza_data = df.index[df["Data"].isna() & (ore_tmp != 0)] + primo_rigo
+    if len(senza_data):
+        raise ValueError("ci sono righe con orari ma senza una data valida (righe Excel: "
+                         + ", ".join(str(int(r)) for r in senza_data) + "). Scrivi la data come gg/mm/aaaa.")
     df = df.dropna(subset=["Data"]).copy()
 
     def num(nome):
