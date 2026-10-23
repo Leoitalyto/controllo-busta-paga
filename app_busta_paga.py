@@ -86,7 +86,7 @@ se file_excel e file_pdf:
     # --- 1. EXCEL ---
     Tentativo:
         df, nuovo = leggi_excel(file_excel)
-    tranne l'eccezione come e:
+   exception Except as e:
         st.error(f"Non riesco a leggere il file Excel: {e}")
         st.stop()
     se df è vuoto:
