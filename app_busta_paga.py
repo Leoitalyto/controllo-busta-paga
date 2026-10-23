@@ -1,13 +1,13 @@
 import re
-importa pandas come pd
-importare pdfplumber
+import pandas as pd
+import pdfplumber
 import streamlit as st
 
 # ---------------------------------------------------------------
 # PARTE 1 - FUNZIONI (leggono il foglio Excel e il PDF)
 # ---------------------------------------------------------------
 # Maggiorazioni CCNL FISE Ambientale: (nome, colonna nel foglio Excel, percentuale)
-CATEGORIA = [
+CATEGORIE = [
     ("Straordinario diurno", "Straord. diurno", 20),
     ("Straordinario festivo", "Straord. festivo", 65),
     ("Straordinario notturno", "Straord. notturno", 33),
@@ -17,31 +17,31 @@ CATEGORIA = [
 
 def numero_it(testo):
     """Trasforma '1.234,56' in 1234.56"""
-    restituisci float(testo.replace(".", "").replace(",", "."))
+    return float(testo.replace(".", "").replace(",", "."))
 
 
 def leggi_excel(file):
     """Legge il foglio 'Ore' (intestazioni alla riga 5, 31 righe di giorni).
     Se il file ha il vecchio formato (colonne Data e Ore_Lavorate) lo legge come prima."""
     xls = pd.ExcelFile(file)
-    se "Ore" è presente in xls.sheet_names:
+    if "Ore" in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name="Ore", header=4, nrows=31)
-        df.columns = [str(c).strip() per c in df.columns]
-        nuovo = Vero
-    altro:
+        df.columns = [str(c).strip() for c in df.columns]
+        nuovo = True
+    else:
         df = pd.read_excel(xls)
-        df.columns = [str(c).strip() per c in df.columns]
-        df = df.rename(columns={"Minerario_Lavorate": "Minerario lavorato"})
-        nuovo = Falso
-    se "Data" non è presente in df.columns o "Ore lavorate" non è presente in df.columns:
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.rename(columns={"Ore_Lavorate": "Ore lavorate"})
+        nuovo = False
+    if "Data" not in df.columns or "Ore lavorate" not in df.columns:
         raise ValueError("Nel file non trovo le colonne 'Data' e 'Ore lavorate'. Colonne trovate: "
                          + ", ".join(df.columns))
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-    df = df.dropna(subset=["Data"]).copy() # tolgo le righe vuote
-    df["Minerario lavorato"] = pd.to_numeric(df["Minerario lavorato"], errori="coercire").fillna(0)
-    per _, col, _ in CATEGORIA:
+    df = df.dropna(subset=["Data"]).copy()          # tolgo le righe vuote
+    df["Ore lavorate"] = pd.to_numeric(df["Ore lavorate"], errors="coerce").fillna(0)
+    for _, col, _ in CATEGORIE:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0) if col in df.columns else 0.0
-    restituisci df, nuovo
+    return df, nuovo
 
 
 def ore_per_settimana(df, soglia):
@@ -50,7 +50,7 @@ def ore_per_settimana(df, soglia):
     d["Inizio settimana"] = d["Data"].dt.to_period("W-SUN").apply(lambda p: p.start_time.date())
     s = d.groupby("Inizio settimana")["Ore lavorate"].sum().reset_index()
     s["Oltre soglia"] = (s["Ore lavorate"] - soglia).clip(lower=0)
-    ritorno s
+    return s
 
 
 def cerca_voce_pdf(testo, percentuale):
@@ -59,15 +59,15 @@ def cerca_voce_pdf(testo, percentuale):
     schema = (r"STRAORDINARIO[^\n]*?(?<!\d)" + str(percentuale) +
               r"\s*%\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)")
     m = re.search(schema, testo, flags=re.IGNORECASE)
-    se non m:
-        restituisci Nessuno, Nessuno
-    Tentativo:
-        restituisci m.group(0), numero_it(m.group(3))
-    eccetto ValueError:
-        restituisci m.group(0), Nessuno
+    if not m:
+        return None, None
+    try:
+        return m.group(0), numero_it(m.group(3))
+    except ValueError:
+        return m.group(0), None
 
 
-# --- FUNZIONI FINI ---
+# --- FINE FUNZIONI ---
 
 # ---------------------------------------------------------------
 # PARTE 2 - PAGINA DELL'APP
@@ -76,20 +76,20 @@ st.set_page_config(page_title="Controllo Busta Paga FISE", page_icon="📊")
 st.title("📊 Controllo Busta Paga FISE")
 st.write("Carica il foglio Excel delle ore e il PDF della busta paga per il controllo automatico.")
 
-paga_base = st.sidebar.number_input("Paga oraria base (€)", valore=13.22260, format="%.5f")
-soglia = st.sidebar.number_input("Soglia settimanale straordinaria (ore)", value=38.0, step=0.5)
+paga_base = st.sidebar.number_input("Paga oraria base (€)", value=13.22260, format="%.5f")
+soglia = st.sidebar.number_input("Soglia settimanale straordinario (ore)", value=38.0, step=0.5)
 
 excel_file = st.file_uploader("1. Carica il file Excel delle ore", type=["xlsx"])
 pdf_file = st.file_uploader("2. Carica il PDF della busta paga", type=["pdf"])
 
-se file_excel e file_pdf:
+if excel_file and pdf_file:
     # --- 1. EXCEL ---
-    Tentativo:
-        df, nuovo = leggi_excel(file_excel)
-   exception Except as e:
+    try:
+        df, nuovo = leggi_excel(excel_file)
+    except Exception as e:
         st.error(f"Non riesco a leggere il file Excel: {e}")
         st.stop()
-    se df è vuoto:
+    if df.empty:
         st.warning("Nel foglio non ci sono date compilate.")
         st.stop()
 
@@ -98,19 +98,19 @@ se file_excel e file_pdf:
 
     # --- 2. PDF ---
     testo_pdf = ""
-    con pdfplumber.open(pdf_file) come pdf:
-        per pagina in pdf.pages:
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
             testo_pdf += (page.extract_text() or "") + "\n"
 
     # --- 3. CONFRONTO ---
     st.subheader("Risultato del controllo")
-    ricci = []
-    per nome, col, pct in CATEGORIE:
-        minerale = float(df[col].sum())
-        spettante = minerale * paga_base * (1 + pct/100)
+    righe = []
+    for nome, col, pct in CATEGORIE:
+        ore = float(df[col].sum())
+        spettante = ore * paga_base * (1 + pct / 100)
         riga_pdf, pagato = cerca_voce_pdf(testo_pdf, pct)
         righe.append({"Voce": f"{nome} {pct}%", "Ore calcolate": round(ore, 2),
-                      "Spettante (€)": rotondo(spettante, 2),
+                      "Spettante (€)": round(spettante, 2),
                       "Pagato in busta (€)": pagato, "riga": riga_pdf})
     tab = pd.DataFrame(righe)
 
@@ -119,21 +119,21 @@ se file_excel e file_pdf:
     col1, col2 = st.columns(2)
     col1.metric("Straordinario spettante (calcolato)", f"{totale_spettante:.2f} €")
 
-    se non letti.empty:
+    if not letti.empty:
         pagato_tot = float(letti["Pagato in busta (€)"].sum())
         spettante_letti = float(letti["Spettante (€)"].sum())
         col2.metric("Straordinario pagato (voci lette)", f"{pagato_tot:.2f} €")
         differenza = spettante_letti - pagato_tot
-        se la differenza è maggiore di 0,5:
+        if differenza > 0.5:
             st.error(f"⚠️ Attenzione! Mancano circa {differenza:.2f} € di straordinario.")
         elif differenza < -0.5:
             st.success(f"✅ Ti è stato pagato più del dovuto ({abs(differenza):.2f} € in più).")
-        altro:
+        else:
             st.success("✅ Gli importi coincidono!")
-        se len(letti) < len(tab):
+        if len(letti) < len(tab):
             st.info("Alcune voci hanno ore calcolate ma non le ho trovate nel PDF: "
                     "il confronto riguarda solo le voci lette (vedi tabella).")
-    altro:
+    else:
         st.warning("Non sono riuscito a leggere lo straordinario dal PDF. "
                    "Controlla che il PDF sia leggibile (non una scansione-immagine).")
 
@@ -146,8 +146,8 @@ se file_excel e file_pdf:
         st.info("Lo straordinario del foglio Excel e quello ricalcolato qui non coincidono: "
                 "controlla che la soglia nell'app sia uguale a quella del foglio (Parametri).")
 
-    con st.expander("Testo letto dal PDF (per controllo)"):
-        per _, r in tab.iterrows():
-            se r["riga"]:
+    with st.expander("Testo letto dal PDF (per controllo)"):
+        for _, r in tab.iterrows():
+            if r["riga"]:
                 st.write(f"Riga trovata per {r['Voce']}:", r["riga"])
         st.text(testo_pdf[:4000])
